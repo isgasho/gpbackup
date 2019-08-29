@@ -8,6 +8,7 @@ import (
 	"github.com/greenplum-db/gp-common-go-libs/gplog"
 	"github.com/greenplum-db/gp-common-go-libs/iohelper"
 	"github.com/greenplum-db/gp-common-go-libs/operating"
+	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
 )
 
@@ -94,9 +95,19 @@ func (toc *SegmentTOC) WriteToFileAndMakeReadOnly(filename string) error {
 	if err != nil {
 		return err
 	}
-	_, err = tocFile.Write(tocContents)
+	numBytesWritten, err := tocFile.Write(tocContents)
+
+	// UNDO THIS: It is a temporary removal in order to repro a bug
+	// var emptyByteArr []byte
+	// numBytesWritten, err := tocFile.Write(emptyByteArr)
+	// fmt.Println(tocContents)
+	// fmt.Println(tocFile)
+
 	if err != nil {
 		return err
+	}
+	if numBytesWritten == 0 {
+		return errors.New("Zero bytes written to TOC file")
 	}
 	err = operating.System.Chmod(filename, 0444)
 	return err
