@@ -130,6 +130,14 @@ func assertRelationsCreated(conn *dbconn.DBConn, expectedNumTables int) {
 	}
 }
 
+func assertRelationsCreatedInSchema(conn *dbconn.DBConn, schema string, expectedNumTables int) {
+	countQuery := fmt.Sprintf(`SELECT count(*) AS string FROM pg_class c LEFT JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('S','v','r') AND n.nspname = '%s'`, schema)
+	actualTableCount := dbconn.MustSelectString(conn, countQuery)
+	if strconv.Itoa(expectedNumTables) != actualTableCount {
+		Fail(fmt.Sprintf("Expected:\n\t%s relations to have been created\nActual:\n\t%s relations were created", strconv.Itoa(expectedNumTables), actualTableCount))
+	}
+}
+
 func assertRelationsExistForIncremental(conn *dbconn.DBConn, expectedNumTables int) {
 	countQuery := `SELECT count(*) AS string FROM pg_class c LEFT JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('S','v','r') AND n.nspname IN ('old_schema', 'new_schema');`
 	actualTableCount := dbconn.MustSelectString(conn, countQuery)
@@ -1641,6 +1649,40 @@ PARTITION BY LIST (gender)
 			files, err := path.Glob(path.Join(backupDir, "*-1/backups/*", timestamp, "_error_tables*"))
 			Expect(err).ToNot(HaveOccurred())
 			Expect(files).To(HaveLen(0))
+		})
+		It("runs gprestore with --redirect-schema", func() {
+			skipIfOldBackupVersionBefore("1.17.0")
+			timestamp := gpbackup(gpbackupPath, backupHelperPath)
+			testhelper.AssertQueryRuns(restoreConn, "DROP SCHEMA IF EXISTS schema3 CASCADE; CREATE SCHEMA schema3;")
+			defer testhelper.AssertQueryRuns(restoreConn, "DROP SCHEMA schema3 CASCADE")
+			gprestore(gprestorePath, restoreHelperPath, timestamp, "--include-schema", "schema2", "--redirect-db", "restoredb", "--redirect-schema", "schema3")
+			schema3TupleCounts := map[string]int{
+				"schema3.returns": 6,
+				"schema3.foo2":    0,
+				"schema3.foo3":    100,
+				"schema3.ao1":     1000,
+				"schema3.ao2":     1000,
+			}
+			assertDataRestored(restoreConn, schema3TupleCounts)
+			assertRelationsCreatedInSchema(restoreConn, "schema2", 0)
+		})
+		It("runs gprestore with --redirect-schema and multiple included schemas", func() {
+			skipIfOldBackupVersionBefore("1.17.0")
+			tableFile := path.Join(backupDir, "test-schema-file.txt")
+			includeFile := iohelper.MustOpenFileForWriting(tableFile)
+			utils.MustPrintln(includeFile, "public.sales\nschema2.foo2\nschema2.ao1")
+
+			timestamp := gpbackup(gpbackupPath, backupHelperPath)
+			testhelper.AssertQueryRuns(restoreConn, "DROP SCHEMA IF EXISTS schema3 CASCADE; CREATE SCHEMA schema3;")
+			defer testhelper.AssertQueryRuns(restoreConn, "DROP SCHEMA schema3 CASCADE")
+			gprestore(gprestorePath, restoreHelperPath, timestamp, "--include-table-file", tableFile, "--redirect-db", "restoredb", "--redirect-schema", "schema3")
+			schema3TupleCounts := map[string]int{
+				"schema3.foo2":  0,
+				"schema3.ao1":   1000,
+				"schema3.sales": 13,
+			}
+			assertDataRestored(restoreConn, schema3TupleCounts)
+			assertRelationsCreatedInSchema(restoreConn, "schema2", 0)
 		})
 	})
 })
